@@ -59,9 +59,9 @@ class KAD_DisformerEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        out = None
+        out = x
         for layer in self.layers:
-            out = layer(x)
+            out = layer(out)
 
         return out
 

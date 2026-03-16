@@ -10,6 +10,14 @@ from tqdm import tqdm
 from models.KAD_Disformer import KAD_Disformer
 from utils.dataset import KAD_DisformerTrainSet, KAD_DisformerTestSet
 
+
+def compute_freq_regularization(mask: torch.Tensor):
+    pairwise = torch.matmul(mask, mask.transpose(0, 1))
+    overlap = pairwise.sum() - torch.diagonal(pairwise).sum()
+    cover = ((mask.sum(dim=0) - 1.0) ** 2).mean()
+    return overlap, cover
+
+
 model = KAD_Disformer(
     heads=4,
     d_model=64,
@@ -41,19 +49,28 @@ train_loader = DataLoader(
 
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.MSELoss()
+lambda_overlap = 1e-3
+lambda_cover = 1e-3
 
 print("Starting pre-training...")
 model.train()
 for epoch in range(10):
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/10")
-    for i, (seq_context, seq_history, denoised_seq) in enumerate(progress_bar):
+    for i, (seq_context, seq_history) in enumerate(progress_bar):
         optimizer.zero_grad()
-        output = model(seq_context, seq_history)
-        loss = criterion(output, denoised_seq)
+        output, aux = model(seq_context, seq_history, return_aux=True)
+        recon_loss = criterion(output, seq_context)
+        overlap_loss, cover_loss = compute_freq_regularization(aux["mask"])
+        loss = recon_loss + lambda_overlap * overlap_loss + lambda_cover * cover_loss
         loss.backward()
         optimizer.step()
 
-        progress_bar.set_postfix(loss=loss.item())
+        progress_bar.set_postfix(
+            loss=loss.item(),
+            recon=recon_loss.item(),
+            overlap=overlap_loss.item(),
+            cover=cover_loss.item(),
+        )
 
 print("Pre-training finished.")
 
@@ -153,7 +170,9 @@ fig.update_yaxes(title_text="Value", row=1, col=1)
 fig.update_yaxes(title_text="Score", row=2, col=1)
 fig.update_xaxes(title_text="Time Step", row=2, col=1)
 
-fig.show()
+output_plot_path = "demo_plot.html"
+fig.write_html(output_plot_path)
+print(f"Saved demo plot to {output_plot_path}")
 
 max_score = np.max(anomaly_scores)
 max_index = np.argmax(anomaly_scores)

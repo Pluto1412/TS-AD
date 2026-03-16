@@ -66,11 +66,11 @@ class KAD_DisformerDecoder(nn.Module):
         self.W_personal_Q = W_personal_Q
 
     def forward(self, x):
-        out = None
+        out = x
         for layer in self.layers:
             if self.W_personal_Q is None or self.W_common_Q is None:
-                out = layer(x)
+                out = layer(out)
             else:
-                out = layer(x, self.W_personal_Q(x) + self.W_common_Q(x))
+                out = layer(out, self.W_personal_Q(out) + self.W_common_Q(out))
 
         return out
