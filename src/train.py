@@ -1,7 +1,6 @@
 import argparse
 import os
 
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,7 +9,7 @@ from tqdm import tqdm
 
 from models.KAD_Disformer import KAD_Disformer
 from utils.config import setup_seed
-from utils.dataset import KAD_DisformerTrainSet
+from utils.dataset import build_pretrain_dataset
 
 
 def compute_freq_regularization(mask: torch.Tensor):
@@ -38,15 +37,19 @@ def main(args):
         decoder_num_layers=args.decoder_num_layers,
     )
 
-    train_df = pd.read_csv(args.data_path)
-    raw_series = train_df["value"].to_numpy()
-
     # --- Training ---
-    train_dataset = KAD_DisformerTrainSet(
-        raw_series,
+    train_dataset, train_stats = build_pretrain_dataset(
+        args.data_path,
         win_len=args.win_len,
         seq_len=args.seq_len,
         seq_stride=args.seq_stride,
+        normalize_per_kpi=args.normalize_per_kpi,
+    )
+    total_series = sum(item["points"] for item in train_stats)
+    total_samples = sum(item["samples"] for item in train_stats)
+    print(
+        f"Loaded {len(train_stats)} KPI series for pretraining "
+        f"({total_series} points, {total_samples} training windows)."
     )
 
     train_loader = DataLoader(
@@ -113,10 +116,20 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cpu', help='Device to train on (e.g., "cpu", "cuda")')
 
     # Data parameters
-    parser.add_argument('--data_path', type=str, default='data/train.csv', help='Path to training data')
+    parser.add_argument(
+        '--data_path',
+        type=str,
+        default='data/train.csv',
+        help='Path to a single train.csv or a directory of KPI subdirectories containing train.csv files',
+    )
     parser.add_argument('--win_len', type=int, default=20, help='Window length for dataset')
     parser.add_argument('--seq_len', type=int, default=100, help='Sequence length for dataset')
     parser.add_argument('--seq_stride', type=int, default=10, help='Sequence stride for dataset')
+    parser.add_argument(
+        '--normalize_per_kpi',
+        action='store_true',
+        help='Normalize each KPI series independently before windowing. Recommended for multi-KPI pretraining.',
+    )
 
     # Training parameters
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')

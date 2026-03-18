@@ -12,6 +12,24 @@ from models.KAD_Disformer import KAD_Disformer
 from utils.dataset import KAD_DisformerTestSet
 from utils.evaluate import f1_score_with_point_adjust, f1_score_point
 
+
+def find_anomaly_segments(labels):
+    segments = []
+    start = None
+
+    for idx, label in enumerate(labels):
+        if label == 1 and start is None:
+            start = idx
+        elif label == 0 and start is not None:
+            segments.append((start, idx - 1))
+            start = None
+
+    if start is not None:
+        segments.append((start, len(labels) - 1))
+
+    return segments
+
+
 def main(args):
     # Load model
     model = KAD_Disformer(
@@ -80,6 +98,9 @@ def main(args):
     reconstructed_avg[non_zero_indices] = reconstructed_full[non_zero_indices] / counts[non_zero_indices]
 
     anomaly_scores = np.abs(reconstructed_avg - raw_series.cpu().numpy())
+    labels = test_df["label"].to_numpy()
+    anomaly_segments = find_anomaly_segments(labels)
+
     # --- Visualization ---
     print(f"Generating plot and saving to {args.output_plot_path}...")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
@@ -97,13 +118,44 @@ def main(args):
                    line=dict(color='red', dash='dash')),
         row=1, col=1
     )
+    fig.add_trace(
+        go.Scatter(
+            x=np.flatnonzero(labels == 1),
+            y=raw_series.cpu().numpy()[labels == 1],
+            name="True Anomaly Points",
+            mode="markers",
+            marker=dict(color='crimson', size=6, symbol='circle'),
+        ),
+        row=1, col=1
+    )
 
     # Plot 2: Anomaly Scores
     score_indices = np.arange(len(anomaly_scores)) * args.seq_stride
     fig.add_trace(
-        go.Scatter(x=score_indices, y=anomaly_scores, name="Anomaly Score (MSE)", line=dict(color='orange')),
+        go.Scatter(x=score_indices, y=anomaly_scores, name="Anomaly Score (Absolute Error)", line=dict(color='orange')),
         row=2, col=1
     )
+    fig.add_trace(
+        go.Scatter(
+            x=np.arange(len(labels)),
+            y=labels,
+            name="True Label",
+            mode="lines",
+            line=dict(color='crimson', width=1.5, dash='dot'),
+        ),
+        row=2, col=1
+    )
+
+    for start, end in anomaly_segments:
+        fig.add_vrect(
+            x0=start,
+            x1=end + 1,
+            fillcolor="rgba(220, 20, 60, 0.12)",
+            line_width=0,
+            layer="below",
+            row="all",
+            col=1,
+        )
 
     fig.update_layout(
         title_text="Anomaly Detection Visualization",
@@ -118,7 +170,6 @@ def main(args):
 
     # --- Evaluation ---
     print("Evaluating model...")
-    labels = test_df["label"].to_numpy()
     f1_adjust = f1_score_with_point_adjust(labels, anomaly_scores, delay=args.delay)
     f1 = f1_score_point(labels, anomaly_scores)
 

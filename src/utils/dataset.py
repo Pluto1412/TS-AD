@@ -1,11 +1,11 @@
-import pandas as pd
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-import torch
-from sklearn.preprocessing import minmax_scale
 import os
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import pywt
+import torch
+from torch.utils.data import ConcatDataset, Dataset
 
 def recover_patch(seqs_with_patch, patch_stride=1, seq_stride=1):
     # if isinstance(seqs_with_patch, list):
@@ -157,6 +157,89 @@ class KAD_DisformerTestSet(Dataset):
 
     def __getitem__(self, index):
         return self.context_flow[index], self.history_flow[index]
+
+
+def normalize_series(seqs, eps: float = 1e-6):
+    seqs = np.asarray(seqs, dtype=np.float32)
+    mean = float(seqs.mean())
+    std = float(seqs.std())
+    if std < eps:
+        std = 1.0
+    return (seqs - mean) / std
+
+
+def load_single_series_csv(csv_path, normalize: bool = False):
+    df = pd.read_csv(csv_path)
+    if "value" not in df.columns:
+        raise ValueError(f"CSV does not contain 'value' column: {csv_path}")
+
+    seqs = df["value"].to_numpy(dtype=np.float32)
+    if normalize:
+        seqs = normalize_series(seqs)
+    return seqs
+
+
+def discover_kpi_train_csvs(data_path):
+    data_path = Path(data_path)
+    if data_path.is_file():
+        return [data_path]
+
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data path not found: {data_path}")
+
+    direct_train_csv = data_path / "train.csv"
+    if direct_train_csv.is_file():
+        return [direct_train_csv]
+
+    train_csvs = sorted(
+        child / "train.csv"
+        for child in data_path.iterdir()
+        if child.is_dir() and (child / "train.csv").is_file()
+    )
+    if not train_csvs:
+        raise FileNotFoundError(
+            f"No train.csv found at {data_path} or its immediate KPI subdirectories."
+        )
+    return train_csvs
+
+
+def build_pretrain_dataset(
+    data_path,
+    win_len,
+    seq_len,
+    seq_stride=1,
+    normalize_per_kpi: bool = False,
+):
+    train_csvs = discover_kpi_train_csvs(data_path)
+    datasets = []
+    stats = []
+
+    for csv_path in train_csvs:
+        seqs = load_single_series_csv(csv_path, normalize=normalize_per_kpi)
+        if len(seqs) <= win_len + seq_len - 2:
+            continue
+
+        dataset = KAD_DisformerTrainSet(
+            seqs,
+            win_len=win_len,
+            seq_len=seq_len,
+            seq_stride=seq_stride,
+        )
+        datasets.append(dataset)
+        stats.append(
+            {
+                "source": str(csv_path),
+                "points": len(seqs),
+                "samples": len(dataset),
+            }
+        )
+
+    if not datasets:
+        raise ValueError("No usable KPI train.csv files were found for pretraining.")
+
+    if len(datasets) == 1:
+        return datasets[0], stats
+    return ConcatDataset(datasets), stats
     
 
 def train_test_split(data, train_ratio=0.8):
