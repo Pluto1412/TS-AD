@@ -1,5 +1,4 @@
 import argparse
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -10,67 +9,80 @@ def sanitize_kpi_id(kpi_id: str) -> str:
 
 
 def split_single_kpi(
-    kpi_df: pd.DataFrame,
-    pretrain_ratio: float,
-    finetune_ratio: float,
-    min_points: int,
+    train_df: pd.DataFrame,
+    gt_df: pd.DataFrame,
+    finetune_train_ratio: float,
+    min_train_points: int,
     min_eval_points: int,
 ):
-    kpi_df = kpi_df.sort_values("timestamp").reset_index(drop=True)
-    total = len(kpi_df)
-    if total < min_points:
+    train_df = train_df.sort_values("timestamp").reset_index(drop=True)
+    gt_df = gt_df.sort_values("timestamp").reset_index(drop=True)
+
+    train_total = len(train_df)
+    gt_total = len(gt_df)
+    if train_total < min_train_points or gt_total < (min_eval_points * 2 + 1):
         return None
 
-    pretrain_end = int(total * pretrain_ratio)
-    finetune_end = int(total * finetune_ratio)
+    finetune_train_end = int(gt_total * finetune_train_ratio)
 
-    # Keep at least one point in each split.
-    pretrain_end = max(1, min(pretrain_end, total - 3))
-    finetune_end = max(pretrain_end + 1, min(finetune_end, total - 2))
-    remain = total - finetune_end
+    # Keep at least one point in finetune train and enough room for two eval splits.
+    finetune_train_end = max(1, min(finetune_train_end, gt_total - 2 * min_eval_points))
+    remain = gt_total - finetune_train_end
     finetune_test_size = remain // 2
     test_size = remain - finetune_test_size
     if finetune_test_size < min_eval_points or test_size < min_eval_points:
         return None
 
-    finetune_test_end = finetune_end + finetune_test_size
+    finetune_test_end = finetune_train_end + finetune_test_size
 
-    train_df = kpi_df.iloc[:pretrain_end][["value"]]
-    finetune_train_df = kpi_df.iloc[pretrain_end:finetune_end][["value"]]
-    finetune_test_df = kpi_df.iloc[finetune_end:finetune_test_end][["value", "label"]]
-    test_df = kpi_df.iloc[finetune_test_end:][["value", "label"]]
+    pretrain_df = train_df[["value"]]
+    finetune_train_df = gt_df.iloc[:finetune_train_end][["value"]]
+    finetune_test_df = gt_df.iloc[finetune_train_end:finetune_test_end][["value", "label"]]
+    test_df = gt_df.iloc[finetune_test_end:][["value", "label"]]
 
     if (
-        len(train_df) == 0
+        len(pretrain_df) == 0
         or len(finetune_train_df) == 0
         or len(finetune_test_df) == 0
         or len(test_df) == 0
     ):
         return None
 
-    return train_df, finetune_train_df, finetune_test_df, test_df
+    return pretrain_df, finetune_train_df, finetune_test_df, test_df
 
 
 def main(args):
-    input_path = Path(args.input_csv)
+    train_path = Path(args.train_csv)
+    ground_truth_path = Path(args.ground_truth_hdf)
     output_root = Path(args.output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(input_path)
+    train_source = pd.read_csv(train_path)
+    ground_truth = pd.read_hdf(ground_truth_path, key=args.ground_truth_key)
     required_columns = {"timestamp", "value", "label", "KPI ID"}
-    missing = required_columns - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns: {sorted(missing)}")
+    missing_train = required_columns - set(train_source.columns)
+    missing_ground_truth = required_columns - set(ground_truth.columns)
+    if missing_train:
+        raise ValueError(f"Train source missing columns: {sorted(missing_train)}")
+    if missing_ground_truth:
+        raise ValueError(f"Ground truth missing columns: {sorted(missing_ground_truth)}")
+
+    train_groups = {
+        str(kpi_id): kpi_df.copy() for kpi_id, kpi_df in train_source.groupby("KPI ID")
+    }
+    gt_groups = {
+        str(kpi_id): kpi_df.copy() for kpi_id, kpi_df in ground_truth.groupby("KPI ID")
+    }
 
     summary_rows = []
     produced = 0
 
-    for kpi_id, kpi_df in df.groupby("KPI ID"):
+    for kpi_id in sorted(set(train_groups) & set(gt_groups)):
         split_result = split_single_kpi(
-            kpi_df,
-            pretrain_ratio=args.pretrain_ratio,
-            finetune_ratio=args.finetune_ratio,
-            min_points=args.min_points,
+            train_groups[kpi_id],
+            gt_groups[kpi_id],
+            finetune_train_ratio=args.finetune_train_ratio,
+            min_train_points=args.min_train_points,
             min_eval_points=args.min_eval_points,
         )
         if split_result is None:
@@ -88,7 +100,8 @@ def main(args):
         summary_rows.append(
             {
                 "kpi_id": kpi_id,
-                "total_points": len(kpi_df),
+                "train_source_points": len(train_groups[kpi_id]),
+                "ground_truth_points": len(gt_groups[kpi_id]),
                 "train_points": len(train_df),
                 "finetune_train_points": len(finetune_train_df),
                 "finetune_test_points": len(finetune_test_df),
@@ -104,7 +117,8 @@ def main(args):
     summary_path = output_root / "summary.csv"
     summary_df.to_csv(summary_path, index=False)
 
-    print(f"Input: {input_path}")
+    print(f"Train source: {train_path}")
+    print(f"Ground truth: {ground_truth_path} (key={args.ground_truth_key})")
     print(f"Output root: {output_root}")
     print(f"KPI directories produced: {produced}")
     print(f"Summary: {summary_path}")
@@ -112,13 +126,25 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Convert KPI-Anomaly-Detection dataset into TS-AD per-KPI split format."
+        description="Convert KPI-Anomaly-Detection phase2 train + ground truth into TS-AD per-KPI split format."
     )
     parser.add_argument(
-        "--input_csv",
+        "--train_csv",
         type=str,
         default="KPI-Anomaly-Detection-master/Finals_dataset/unpacked/phase2_train.csv",
-        help="Path to labeled source CSV with columns: timestamp,value,label,KPI ID",
+        help="Path to official phase2 train CSV with columns: timestamp,value,label,KPI ID",
+    )
+    parser.add_argument(
+        "--ground_truth_hdf",
+        type=str,
+        default="KPI-Anomaly-Detection-master/Finals_dataset/unpacked/phase2_ground_truth.hdf",
+        help="Path to official phase2 ground truth HDF.",
+    )
+    parser.add_argument(
+        "--ground_truth_key",
+        type=str,
+        default="data",
+        help="HDF key containing the ground truth table.",
     )
     parser.add_argument(
         "--output_dir",
@@ -127,27 +153,21 @@ if __name__ == "__main__":
         help="Output directory containing one folder per KPI ID.",
     )
     parser.add_argument(
-        "--pretrain_ratio",
+        "--finetune_train_ratio",
         type=float,
-        default=0.7,
-        help="Ratio used for train.csv split end.",
+        default=0.5,
+        help="Ratio used for finetune_train.csv split end inside the ground truth segment.",
     )
     parser.add_argument(
-        "--finetune_ratio",
-        type=float,
-        default=0.85,
-        help="Ratio used for finetune_train.csv split end.",
-    )
-    parser.add_argument(
-        "--min_points",
+        "--min_train_points",
         type=int,
         default=500,
-        help="Skip KPI series with fewer than this number of points.",
+        help="Skip KPI series whose official train segment has fewer than this number of points.",
     )
     parser.add_argument(
         "--min_eval_points",
         type=int,
         default=200,
-        help="Minimum required points for both finetune_test.csv and test.csv.",
+        help="Minimum required points for both finetune_test.csv and test.csv after splitting the ground truth segment.",
     )
     main(parser.parse_args())
