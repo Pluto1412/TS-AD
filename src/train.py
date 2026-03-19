@@ -57,6 +57,8 @@ def main(args):
         batch_size=args.batch_size,
         drop_last=False,
         shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
     )
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -134,6 +136,8 @@ def parse_args():
     # Training parameters
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for training')
+    parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader worker processes')
+    parser.add_argument('--pin_memory', action='store_true', help='Enable pinned memory for faster host-to-device transfer')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--lr_step_size', type=int, default=5, help='Step size for learning rate scheduler')
     parser.add_argument('--seed', type=int, default=2022, help='Random seed')
