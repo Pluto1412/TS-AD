@@ -168,6 +168,15 @@ def normalize_series(seqs, eps: float = 1e-6):
     return (seqs - mean) / std
 
 
+def compute_series_stats(seqs, eps: float = 1e-6):
+    seqs = np.asarray(seqs, dtype=np.float32)
+    mean = float(seqs.mean())
+    std = float(seqs.std())
+    if std < eps:
+        std = 1.0
+    return mean, std
+
+
 def load_single_series_csv(csv_path, normalize: bool = False):
     df = pd.read_csv(csv_path)
     if "value" not in df.columns:
@@ -177,6 +186,24 @@ def load_single_series_csv(csv_path, normalize: bool = False):
     if normalize:
         seqs = normalize_series(seqs)
     return seqs
+
+
+def load_series_frame(csv_path, normalize: bool = False):
+    df = pd.read_csv(csv_path)
+    if "value" not in df.columns:
+        raise ValueError(f"CSV does not contain 'value' column: {csv_path}")
+
+    values = df["value"].to_numpy(dtype=np.float32)
+    mean, std = compute_series_stats(values)
+    normalized_values = (values - mean) / std if normalize else values
+
+    return {
+        "frame": df,
+        "values": normalized_values.astype(np.float32),
+        "original_values": values,
+        "mean": mean,
+        "std": std,
+    }
 
 
 def discover_kpi_train_csvs(data_path):

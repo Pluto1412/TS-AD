@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.KAD_Disformer import KAD_Disformer
-from utils.dataset import KAD_DisformerTestSet
+from utils.dataset import KAD_DisformerTestSet, load_series_frame
 from utils.evaluate import f1_score_with_point_adjust, f1_score_point
 
 
@@ -46,8 +46,12 @@ def main(args):
     model.eval()
 
     # Load data
-    test_df = pd.read_csv(args.data_path)
-    raw_series = torch.tensor(test_df["value"].to_numpy(), dtype=torch.float32)
+    test_data = load_series_frame(args.data_path, normalize=args.normalize_per_kpi)
+    test_df = test_data["frame"]
+    raw_series = torch.tensor(test_data["values"], dtype=torch.float32)
+    original_series = test_data["original_values"]
+    series_mean = test_data["mean"]
+    series_std = test_data["std"]
 
     test_dataset = KAD_DisformerTestSet(
         raw_series,
@@ -97,7 +101,12 @@ def main(args):
     non_zero_indices = counts > 0
     reconstructed_avg[non_zero_indices] = reconstructed_full[non_zero_indices] / counts[non_zero_indices]
 
-    anomaly_scores = np.abs(reconstructed_avg - raw_series.cpu().numpy())
+    if args.normalize_per_kpi:
+        reconstructed_for_eval = reconstructed_avg * series_std + series_mean
+    else:
+        reconstructed_for_eval = reconstructed_avg
+
+    anomaly_scores = np.abs(reconstructed_for_eval - original_series)
     labels = test_df["label"].to_numpy()
     anomaly_segments = find_anomaly_segments(labels)
 
@@ -109,19 +118,19 @@ def main(args):
 
     # Plot 1: Original and Reconstructed Series
     fig.add_trace(
-        go.Scatter(x=np.arange(len(raw_series)), y=raw_series, name="Original Series",
+        go.Scatter(x=np.arange(len(original_series)), y=original_series, name="Original Series",
                    line=dict(color='blue')),
         row=1, col=1
     )
     fig.add_trace(
-        go.Scatter(x=np.arange(len(reconstructed_avg)), y=reconstructed_avg, name="Reconstructed Series",
+        go.Scatter(x=np.arange(len(reconstructed_for_eval)), y=reconstructed_for_eval, name="Reconstructed Series",
                    line=dict(color='red', dash='dash')),
         row=1, col=1
     )
     fig.add_trace(
         go.Scatter(
             x=np.flatnonzero(labels == 1),
-            y=raw_series.cpu().numpy()[labels == 1],
+            y=original_series[labels == 1],
             name="True Anomaly Points",
             mode="markers",
             marker=dict(color='crimson', size=6, symbol='circle'),
@@ -198,6 +207,11 @@ def parse_args():
     parser.add_argument('--win_len', type=int, default=20, help='Window length for dataset')
     parser.add_argument('--seq_len', type=int, default=100, help='Sequence length for dataset')
     parser.add_argument('--seq_stride', type=int, default=1, help='Sequence stride for dataset')
+    parser.add_argument(
+        '--normalize_per_kpi',
+        action='store_true',
+        help='Normalize the KPI series before inference, then invert reconstruction for plotting and scoring.',
+    )
 
     # Testing parameters
     parser.add_argument('--output_plot_path', type=str, default='test_plot.html', help='Path to save output plot')

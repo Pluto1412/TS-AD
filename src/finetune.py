@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from models.KAD_Disformer import KAD_Disformer
 from utils.config import setup_seed
-from utils.dataset import KAD_DisformerTrainSet, KAD_DisformerTestSet
+from utils.dataset import KAD_DisformerTrainSet, KAD_DisformerTestSet, load_series_frame
 from utils.evaluate import f1_score_with_point_adjust, f1_score_point
 
 
@@ -29,8 +29,12 @@ def evaluate(model, args, data_path, plot_path=None):
     model.eval()
 
     # Load data
-    test_df = pd.read_csv(data_path)
-    raw_series = torch.tensor(test_df["value"].to_numpy(), dtype=torch.float32)
+    test_data = load_series_frame(data_path, normalize=args.normalize_per_kpi)
+    test_df = test_data["frame"]
+    raw_series = torch.tensor(test_data["values"], dtype=torch.float32)
+    original_series = test_data["original_values"]
+    series_mean = test_data["mean"]
+    series_std = test_data["std"]
 
     test_dataset = KAD_DisformerTestSet(
         raw_series,
@@ -76,7 +80,12 @@ def evaluate(model, args, data_path, plot_path=None):
     non_zero_indices = counts > 0
     reconstructed_avg[non_zero_indices] = reconstructed_full[non_zero_indices] / counts[non_zero_indices]
 
-    anomaly_scores = np.abs(reconstructed_avg - raw_series.cpu().numpy())
+    if args.normalize_per_kpi:
+        reconstructed_for_eval = reconstructed_avg * series_std + series_mean
+    else:
+        reconstructed_for_eval = reconstructed_avg
+
+    anomaly_scores = np.abs(reconstructed_for_eval - original_series)
 
     if 'label' in test_df.columns:
         labels = test_df["label"].to_numpy()
@@ -95,9 +104,9 @@ def evaluate(model, args, data_path, plot_path=None):
                             subplot_titles=("Time Series Reconstruction", "Anomaly Scores"),
                             vertical_spacing=0.15)
         fig.add_trace(
-            go.Scatter(x=np.arange(len(raw_series)), y=raw_series, name="Original Series", line=dict(color='blue')),
+            go.Scatter(x=np.arange(len(original_series)), y=original_series, name="Original Series", line=dict(color='blue')),
             row=1, col=1)
-        fig.add_trace(go.Scatter(x=np.arange(len(reconstructed_avg)), y=reconstructed_avg, name="Reconstructed Series",
+        fig.add_trace(go.Scatter(x=np.arange(len(reconstructed_for_eval)), y=reconstructed_for_eval, name="Reconstructed Series",
                                  line=dict(color='red', dash='dash')), row=1, col=1)
         score_indices = np.arange(len(anomaly_scores))
         fig.add_trace(
@@ -146,8 +155,8 @@ def main(args):
             print(name)
 
     # --- Finetuning ---
-    train_df = pd.read_csv(args.finetune_data_path)
-    raw_series = train_df["value"].to_numpy()
+    train_data = load_series_frame(args.finetune_data_path, normalize=args.normalize_per_kpi)
+    raw_series = train_data["values"]
 
     train_dataset = KAD_DisformerTrainSet(
         raw_series,
@@ -218,6 +227,11 @@ def parse_args():
     parser.add_argument('--win_len', type=int, default=20, help='Window length')
     parser.add_argument('--seq_len', type=int, default=100, help='Sequence length')
     parser.add_argument('--seq_stride', type=int, default=1, help='Sequence stride')
+    parser.add_argument(
+        '--normalize_per_kpi',
+        action='store_true',
+        help='Normalize the KPI series before finetuning/evaluation, then invert reconstruction for plotting and scoring.',
+    )
 
     # Finetuning parameters
     parser.add_argument('--epochs', type=int, default=5, help='Number of finetuning epochs')
